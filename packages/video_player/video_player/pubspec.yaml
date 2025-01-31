@@ -1,7 +1,7 @@
 name: video_player_extra
 description: A fork of flutter's video_player with extra ability to play 180 or 360 videos.
-repository: https://github.com/Eittipat/plugins/tree/video_player_360/packages/video_player/video_player
-issue_tracker: https://github.com/Eittipat/plugins/issues?q=is%3Aissue+is%3Aopen+label%3A%22p%3A+video_player%22
+repository: https://github.com/mnm967/plugins/tree/video_player_360/packages/video_player/video_player
+issue_tracker: https://github.com/mnm967/plugins/issues?q=is%3Aissue+is%3Aopen+label%3A%22p%3A+video_player%22
 version: 2.2.11+4
 
 environment:

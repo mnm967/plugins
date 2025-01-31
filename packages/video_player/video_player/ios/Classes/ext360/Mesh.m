@@ -7,18 +7,19 @@
 
 #import "Mesh.h"
 #import "Utils.h"
-
-@import OpenGLES;
+@import Metal;
+@import MetalKit;
+@import simd;
 
 #define SPHERE_POSITION_COORDS_PER_VERTEX 3
-#define SPHERE_TEXTURE_COORDS_PER_VERTEX 4
-#define SPHERE_CPV 7
-#define SPHERE_VERTEX_STRIDE_BYTES 28
+#define SPHERE_TEXTURE_COORDS_PER_VERTEX 2
+#define SPHERE_CPV 5
+#define SPHERE_VERTEX_STRIDE_BYTES (SPHERE_CPV * sizeof(float))
 
-#define CANVAS_QUAD_POSITION_COORDS_PER_VERTEX 2
+#define CANVAS_QUAD_POSITION_COORDS_PER_VERTEX 3
 #define CANVAS_QUAD_TEXTURE_COORDS_PER_VERTEX 2
-#define CANVAS_QUAD_CPV 4
-#define CANVAS_QUAD_VERTEX_STRIDE_BYTES 16
+#define CANVAS_QUAD_CPV 5
+#define CANVAS_QUAD_VERTEX_STRIDE_BYTES (CANVAS_QUAD_CPV * sizeof(float))
 
 #define MEDIA_MONOSCOPIC 0
 #define MEDIA_STEREO_LEFT_RIGHT 1
@@ -55,66 +56,128 @@ const NSString* FRAGMENT_SHADER_CODE =
 @"  fragmentColor = texture(uTexture, vTexCoords);\n"\
 @"}";
 
-@interface Mesh()
-
-@end
-
 @implementation Mesh {
-  
 @protected
-  float* _vertices;
-  int _length;
-  GLuint _program;
-  GLint _mvpMatrixHandle;
-  GLuint _positionHandle;
-  GLuint _texCoordsHandle;
-  GLuint _textureHandle;
-  GLuint _vertexBuffer;
-  GLuint _textureBuffer;
-  GLuint _vertexArray;
-}
--(instancetype)initWithVertices:(float*)vertices :(int)length {
-  self = [super init];
-  if (self) {
-    _vertices = vertices;
-    _length = length;
-    _mvpMatrixHandle = 0;
-    _positionHandle = 0;
-    _texCoordsHandle = 0;
-    _textureHandle = 0;
-    _vertexBuffer = 0;
-    _textureBuffer = 0;
-    _vertexArray = 0;
-  }
-  return self;
+    id<MTLDevice> _device;
+    id<MTLBuffer> _vertexBuffer;
+    id<MTLBuffer> _indexBuffer;
 }
 
-
--(void)glInit {
-  NSLog(@"NotImplementedError");
+- (instancetype)initWithVertices:(float*)vertices length:(NSUInteger)length {
+    self = [super init];
+    if (self) {
+        _length = length;
+        [self setVertices:vertices count:length];
+        _device = MTLCreateSystemDefaultDevice();
+    }
+    return self;
 }
 
--(void)glDrawWithTexture:(CVOpenGLESTextureRef)texture mvpMatrix:(GLKMatrix4)mvpMatrix {
-  NSLog(@"NotImplementedError");
+- (void)getVertices:(float **)vertices count:(NSUInteger *)count {
+    if (_vertices && _vertexCount > 0) {
+        *vertices = (float *)malloc(_vertexCount * sizeof(float));
+        if (*vertices) {
+            memcpy(*vertices, _vertices, _vertexCount * sizeof(float));
+            *count = _vertexCount;
+        } else {
+            *vertices = NULL;
+            *count = 0;
+        }
+    } else {
+        *vertices = NULL;
+        *count = 0;
+    }
 }
 
--(void)glDestroy {
-  if(_program) {
-    glDeleteProgram(_program);
-  }
-  glDeleteBuffers(1, &_vertexArray);
-  glDeleteBuffers(1, &_vertexBuffer);
-  free(_vertices);
+- (void)getIndices:(uint16_t **)indices count:(NSUInteger *)count {
+    if (_indices && _indexCount > 0) {
+        *indices = (uint16_t *)malloc(_indexCount * sizeof(uint16_t));
+        if (*indices) {
+            memcpy(*indices, _indices, _indexCount * sizeof(uint16_t));
+            *count = _indexCount;
+        } else {
+            *indices = NULL;
+            *count = 0;
+        }
+    } else {
+        *indices = NULL;
+        *count = 0;
+    }
 }
 
-@end
+- (void)setVertices:(float *)vertices count:(NSUInteger)count {
+    if (_vertices) {
+        free(_vertices);
+        _vertices = NULL;
+    }
+    if (vertices && count > 0) {
+        _vertices = (float *)malloc(count * sizeof(float));
+        if (_vertices) {
+            memcpy(_vertices, vertices, count * sizeof(float));
+            _vertexCount = count;
+            
+            // Create Metal vertex buffer
+            if (_device) {
+                _vertexBuffer = [_device newBufferWithBytes:_vertices
+                                                   length:count * sizeof(float)
+                                                  options:MTLResourceStorageModeShared];
+            }
+        } else {
+            _vertexCount = 0;
+        }
+    } else {
+        _vertices = NULL;
+        _vertexCount = 0;
+    }
+}
 
-@interface Sphere()
+- (void)setIndices:(uint16_t *)indices count:(NSUInteger)count {
+    if (_indices) {
+        free(_indices);
+        _indices = NULL;
+    }
+    if (indices && count > 0) {
+        _indices = (uint16_t *)malloc(count * sizeof(uint16_t));
+        if (_indices) {
+            memcpy(_indices, indices, count * sizeof(uint16_t));
+            _indexCount = count;
+            
+            // Create Metal index buffer
+            if (_device) {
+                _indexBuffer = [_device newBufferWithBytes:_indices
+                                                  length:count * sizeof(uint16_t)
+                                                 options:MTLResourceStorageModeShared];
+            }
+        } else {
+            _indexCount = 0;
+        }
+    } else {
+        _indices = NULL;
+        _indexCount = 0;
+    }
+}
+
+- (NSUInteger)indexCount {
+    return _indexCount;
+}
+
+- (void)dealloc {
+    if (_vertices) {
+        free(_vertices);
+        _vertices = NULL;
+    }
+    if (_indices) {
+        free(_indices);
+        _indices = NULL;
+    }
+    _vertexBuffer = nil;
+    _indexBuffer = nil;
+    _device = nil;
+}
 
 @end
 
 @implementation Sphere
-
 
 +(instancetype)createUvSphereWithRadius:(float)radius
                               latitudes:(int)latitudes
@@ -122,253 +185,155 @@ const NSString* FRAGMENT_SHADER_CODE =
                      verticalFovDegrees:(float)verticalFovDegrees
                    horizontalFovDegrees:(float)horizontalFovDegrees
                             mediaFormat:(int)mediaFormat {
-  
-  if (radius <= 0
-      || latitudes < 1 || longitudes < 1
-      || verticalFovDegrees <= 0 || verticalFovDegrees > 180
-      || horizontalFovDegrees <= 0 || horizontalFovDegrees > 360) {
-    NSLog(@"Invalid Parameters");
-    assert(NO);
-  }
-  
-  // Compute angular size in radians of each UV quad.
-  float verticalFovRads = GLKMathDegreesToRadians(verticalFovDegrees);
-  float horizontalFovRads = GLKMathDegreesToRadians(horizontalFovDegrees);
-  float quadHeightRads = verticalFovRads / (float)latitudes;
-  float quadWidthRads = horizontalFovRads / (float)longitudes;
-  
-  const int CPV = SPHERE_CPV;
-  
-  // Each latitude strip has 2 * (longitudes quads + extra edge) vertices + 2 degenerate vertices.
-  int vertexCount = (2 * (longitudes + 1) + 2) * latitudes;
-  // Buffer to return.
-  int length = vertexCount*CPV;
-  float *vertexData = (float*)malloc(length*sizeof(float));
-  
-  // Generate the data for the sphere which is a set of triangle strips representing each
-  // latitude band.
-  int v = 0; // Index into the vertex array.
-  // (i, j) represents a quad in the equirectangular sphere.
-  for (int j = 0; j < latitudes; ++j) { // For each horizontal triangle strip.
-    // Each latitude band lies between the two phi values. Each vertical edge on a band lies on
-    // a theta value.
-    float phiLow = (quadHeightRads * j - verticalFovRads / 2);
-    float phiHigh = (quadHeightRads * (j + 1) - verticalFovRads / 2);
     
-    for (int i = 0; i < longitudes + 1; ++i) { // For each vertical edge in the band.
-      for (int k = 0; k < 2; ++k) { // For low and high points on an edge.
-        // For each point, determine it's position in polar coordinates.
-        float phi = (k == 0) ? phiLow : phiHigh;
-        float theta = quadWidthRads * i + (float) M_PI - horizontalFovRads / 2;
-        
-        // Set vertex position data as Cartesian coordinates.
-        vertexData[CPV * v + 0] = -(float) (radius * sin(theta) * cos(phi));
-        vertexData[CPV * v + 1] = (float) (radius * sin(phi));
-        vertexData[CPV * v + 2] = (float) (radius * cos(theta) * cos(phi));
-        
-        // Set vertex texture.x data.
-        if (mediaFormat == MEDIA_STEREO_LEFT_RIGHT) {
-          // For left-right media, each eye's x coordinate points to the left or right half of the
-          // texture.
-          vertexData[CPV * v + 3] = (i * quadWidthRads / horizontalFovRads) / 2;
-          vertexData[CPV * v + 5] = (i * quadWidthRads / horizontalFovRads) / 2 + .5f;
-        } else {
-          // For top-bottom or monoscopic media, the eye's x spans the full width of the texture.
-          vertexData[CPV * v + 3] = i * quadWidthRads / horizontalFovRads;
-          vertexData[CPV * v + 5] = i * quadWidthRads / horizontalFovRads;
-        }
-        
-        // Set vertex texture.y data. The "1 - ..." is due to Canvas vs GL coords.
-        if (mediaFormat == MEDIA_STEREO_TOP_BOTTOM) {
-          // For top-bottom media, each eye's y coordinate points to the top or bottom half of the
-          // texture.
-          vertexData[CPV * v + 4] = 1 - (((j + k) * quadHeightRads / verticalFovRads) / 2 + .5f);
-          vertexData[CPV * v + 6] = 1 - ((j + k) * quadHeightRads / verticalFovRads) / 2;
-        } else {
-          // For left-right or monoscopic media, the eye's y spans the full height of the texture.
-          vertexData[CPV * v + 4] = 1 - (j + k) * quadHeightRads / verticalFovRads;
-          vertexData[CPV * v + 6] = 1 - (j + k) * quadHeightRads / verticalFovRads;
-        }
-        
-        v++;
-        
-        // Break up the triangle strip with degenerate vertices by copying first and last points.
-        if ((i == 0 && k == 0) || (i == longitudes && k == 1)) {
-          int dstPos = CPV*v;
-          int srcPos = CPV*(v-1);
-          memcpy(vertexData+dstPos, vertexData+srcPos, sizeof(float)*CPV);
-          v++;
-        }
-      }
-      // Move on to the next vertical edge in the triangle strip.
+    if (radius <= 0
+        || latitudes < 1 || longitudes < 1
+        || verticalFovDegrees <= 0 || verticalFovDegrees > 180
+        || horizontalFovDegrees <= 0 || horizontalFovDegrees > 360) {
+        NSLog(@"Invalid Parameters");
+        return nil;
     }
-    // Move on to the next triangle strip.
-  }
-  
-  return [[self alloc]initWithVertices:vertexData :length];
-}
-
-
--(void)glInit {
-  _program = [Utils compileProgramWithVertexCode:SPHERE_VERTEX_SHADER_CODE
-                                    fragmentCode:FRAGMENT_SHADER_CODE];
-  
-  _mvpMatrixHandle = glGetUniformLocation(_program, "uMvpMatrix");
-  _positionHandle = (GLuint)glGetAttribLocation(_program, "aPosition");
-  _texCoordsHandle = (GLuint)glGetAttribLocation(_program, "aTexCoords");
-  _textureHandle = (GLuint)glGetUniformLocation(_program, "uTexture");
-  
-  // Generate and bind a vertex array object
-  glGenVertexArrays(1, &_vertexArray);
-  glBindVertexArray(_vertexArray);
-  
-  // Generate and bind a vertex buffer object
-  glGenBuffers(1, &_vertexBuffer);
-  glBindBuffer(GL_ARRAY_BUFFER, _vertexBuffer);
-  glBufferData(GL_ARRAY_BUFFER, _length*sizeof(float),_vertices, GL_STATIC_DRAW);
-  
-  glEnableVertexAttribArray(_positionHandle);
-  glEnableVertexAttribArray(_texCoordsHandle);
-  
-  // Load position data
-  glVertexAttribPointer(_positionHandle,
-                        SPHERE_POSITION_COORDS_PER_VERTEX,
-                        GL_FLOAT,
-                        GL_FALSE,
-                        SPHERE_VERTEX_STRIDE_BYTES,
-                        NULL);
-  
-  // Load texture data
-  int *textureOffset = SPHERE_POSITION_COORDS_PER_VERTEX*4;
-  glVertexAttribPointer(_texCoordsHandle,
-                        SPHERE_TEXTURE_COORDS_PER_VERTEX,
-                        GL_FLOAT,
-                        GL_FALSE,
-                        SPHERE_VERTEX_STRIDE_BYTES,
-                        textureOffset);
-  
-  // Unbind the vertex buffer and the vertex array object.
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-  glBindVertexArray(0);
-  
-  glDisableVertexAttribArray(_positionHandle);
-  glDisableVertexAttribArray(_texCoordsHandle);
-  
-}
-
-
--(void)glDrawWithTexture:(CVOpenGLESTextureRef)texture mvpMatrix:(GLKMatrix4)mvpMatrix {
-  glUseProgram(_program);
-  glUniform1i(_textureHandle, 0);
-  glUniformMatrix4fv(_mvpMatrixHandle, 1,GL_FALSE, mvpMatrix.m);
-  
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(CVOpenGLESTextureGetTarget(texture), CVOpenGLESTextureGetName(texture));
-  
-  // Render
-  glBindVertexArray(_vertexArray);
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, _length/SPHERE_CPV);
-  glBindVertexArray(0);
-  
+    
+    // Pre-calculate trig values
+    float verticalFovRads = GLKMathDegreesToRadians(verticalFovDegrees);
+    float horizontalFovRads = GLKMathDegreesToRadians(horizontalFovDegrees);
+    float quadHeightRads = verticalFovRads / (float)latitudes;
+    float quadWidthRads = horizontalFovRads / (float)longitudes;
+    
+    const int CPV = SPHERE_CPV;
+    int vertexCount = (2 * (longitudes + 1) + 2) * latitudes;
+    int length = vertexCount * CPV;
+    
+    // Allocate vertex buffer
+    float *vertexData = (float*)calloc(length, sizeof(float));
+    if (!vertexData) {
+        NSLog(@"Failed to allocate vertex data");
+        return nil;
+    }
+    
+    // Cache sin/cos values
+    float *sinTheta = (float*)malloc((longitudes + 1) * sizeof(float));
+    float *cosTheta = (float*)malloc((longitudes + 1) * sizeof(float));
+    float *sinPhi = (float*)malloc(2 * sizeof(float));
+    float *cosPhi = (float*)malloc(2 * sizeof(float));
+    
+    if (!sinTheta || !cosTheta || !sinPhi || !cosPhi) {
+        free(vertexData);
+        free(sinTheta);
+        free(cosTheta);
+        free(sinPhi);
+        free(cosPhi);
+        return nil;
+    }
+    
+    // Pre-calculate theta values
+    for (int i = 0; i <= longitudes; i++) {
+        float theta = quadWidthRads * i + (float)M_PI - horizontalFovRads / 2;
+        sinTheta[i] = sin(theta);
+        cosTheta[i] = cos(theta);
+    }
+    
+    int v = 0;
+    for (int j = 0; j < latitudes; ++j) {
+        float phiLow = (quadHeightRads * j - verticalFovRads / 2);
+        float phiHigh = (quadHeightRads * (j + 1) - verticalFovRads / 2);
+        
+        sinPhi[0] = sin(phiLow);
+        cosPhi[0] = cos(phiLow);
+        sinPhi[1] = sin(phiHigh);
+        cosPhi[1] = cos(phiHigh);
+        
+        for (int i = 0; i <= longitudes; ++i) {
+            for (int k = 0; k < 2; ++k) {
+                // Position
+                vertexData[CPV * v + 0] = -(float)(radius * sinTheta[i] * cosPhi[k]);
+                vertexData[CPV * v + 1] = (float)(radius * sinPhi[k]);
+                vertexData[CPV * v + 2] = (float)(radius * cosTheta[i] * cosPhi[k]);
+                
+                // Texture coordinates
+                float u = (float)i / longitudes;
+                float v_tex = 1.0f - ((float)(j + k) / latitudes);
+                
+                if (mediaFormat == MEDIA_STEREO_LEFT_RIGHT) {
+                    u *= 0.5f;
+                } else if (mediaFormat == MEDIA_STEREO_TOP_BOTTOM) {
+                    v_tex = v_tex * 0.5f + 0.5f;
+                }
+                
+                vertexData[CPV * v + 3] = u;
+                vertexData[CPV * v + 4] = v_tex;
+                
+                v++;
+                
+                if ((i == 0 && k == 0) || (i == longitudes && k == 1)) {
+                    memcpy(&vertexData[CPV * v], &vertexData[CPV * (v-1)], CPV * sizeof(float));
+                    v++;
+                }
+            }
+        }
+    }
+    
+    free(sinTheta);
+    free(cosTheta);
+    free(sinPhi);
+    free(cosPhi);
+    
+    // Create indices for triangle strip
+    uint16_t* indices = (uint16_t*)malloc(vertexCount * sizeof(uint16_t));
+    if (!indices) {
+        free(vertexData);
+        return nil;
+    }
+    
+    for (int i = 0; i < vertexCount; i++) {
+        indices[i] = i;
+    }
+    
+    Sphere* sphere = [[self alloc] initWithVertices:vertexData length:length];
+    [sphere setVertices:vertexData count:length];
+    [sphere setIndices:indices count:vertexCount];
+    
+    free(vertexData);
+    free(indices);
+    
+    return sphere;
 }
 
 @end
-
-
-@interface CanvasQuad()
-
-@end
-
 
 @implementation CanvasQuad
 
-
 +(instancetype)createCanvasQuad {
-  int length = 16;
-  float *vertices = (float*)malloc(sizeof(float)*length);
-  int counter =0;
-  float width = 1.0;
-  float height = 1.0;
-  vertices[counter++] = -width;
-  vertices[counter++] = -height;
-  vertices[counter++] = 0;
-  vertices[counter++] = 1;
-  vertices[counter++] = width;
-  vertices[counter++] = -height;
-  vertices[counter++] = 1;
-  vertices[counter++] = 1;
-  vertices[counter++] = -width;
-  vertices[counter++] = height;
-  vertices[counter++] = 0;
-  vertices[counter++] = 0;
-  vertices[counter++] = width;
-  vertices[counter++] = height;
-  vertices[counter++] = 1;
-  vertices[counter++] = 0;
-  assert(counter==length);
-  return [[CanvasQuad alloc]initWithVertices:vertices :length];
-}
-
-
--(void)glInit {
-  _program = [Utils compileProgramWithVertexCode:CANVAS_QUAD_VERTEX_SHADER_CODE
-                                    fragmentCode:FRAGMENT_SHADER_CODE];
-  
-  _positionHandle = (GLuint)glGetAttribLocation(_program, "aPosition");
-  _texCoordsHandle = (GLuint)glGetAttribLocation(_program, "aTexCoords");
-  _textureHandle = (GLuint)glGetUniformLocation(_program, "uTexture");
-  
-  // Generate and bind a vertex array object
-  glGenVertexArrays(1, &_vertexArray);
-  glBindVertexArray(_vertexArray);
-  
-  // Generate and bind a vertex buffer object
-  glGenBuffers(1, &_vertexBuffer);
-  glBindBuffer(GL_ARRAY_BUFFER, _vertexBuffer);
-  glBufferData(GL_ARRAY_BUFFER, _length*sizeof(float),_vertices, GL_STATIC_DRAW);
-  
-  glEnableVertexAttribArray(_positionHandle);
-  glEnableVertexAttribArray(_texCoordsHandle);
-  
-  // Load position data
-  glVertexAttribPointer(_positionHandle,
-                        CANVAS_QUAD_POSITION_COORDS_PER_VERTEX,
-                        GL_FLOAT,
-                        GL_FALSE,
-                        CANVAS_QUAD_VERTEX_STRIDE_BYTES,
-                        NULL);
-  
-  // Load texture data
-  int *textureOffset = CANVAS_QUAD_POSITION_COORDS_PER_VERTEX*4;
-  glVertexAttribPointer(_texCoordsHandle,
-                        CANVAS_QUAD_TEXTURE_COORDS_PER_VERTEX,
-                        GL_FLOAT,
-                        GL_FALSE,
-                        CANVAS_QUAD_VERTEX_STRIDE_BYTES,
-                        textureOffset);
-  
-  // Unbind the vertex buffer and the vertex array object.
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-  glBindVertexArray(0);
-  
-  glDisableVertexAttribArray(_positionHandle);
-  glDisableVertexAttribArray(_texCoordsHandle);
-  
-}
-
-
--(void)glDrawWithTexture:(CVOpenGLESTextureRef)texture mvpMatrix:(GLKMatrix4)mvpMatrix {
-  glUseProgram(_program);
-  glUniform1i(_textureHandle, 0);
-  
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(CVOpenGLESTextureGetTarget(texture), CVOpenGLESTextureGetName(texture));
-  
-  // Render
-  glBindVertexArray(_vertexArray);
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, _length/CANVAS_QUAD_CPV);
-  glBindVertexArray(0);
-  
+    // Define vertices with positions and texture coordinates
+    float vertices[] = {
+        // positions (x, y, z)    // texture coords (u, v)
+        -1.0f, -1.0f, 0.0f,      0.0f, 1.0f,    // bottom left
+         1.0f, -1.0f, 0.0f,      1.0f, 1.0f,    // bottom right
+        -1.0f,  1.0f, 0.0f,      0.0f, 0.0f,    // top left
+         1.0f,  1.0f, 0.0f,      1.0f, 0.0f     // top right
+    };
+    
+    // Create a copy of vertices
+    NSUInteger vertexDataSize = 20 * sizeof(float); // 4 vertices * 5 components
+    float *vertexData = (float *)malloc(vertexDataSize);
+    memcpy(vertexData, vertices, vertexDataSize);
+    
+    // Create the quad instance
+    CanvasQuad *quad = [[CanvasQuad alloc] initWithVertices:vertexData length:20];
+    
+    // Define and set indices for triangle strip
+    uint16_t indices[] = {0, 1, 2, 3}; // Triangle strip order
+    NSUInteger indexDataSize = 4 * sizeof(uint16_t);
+    uint16_t *indexData = (uint16_t *)malloc(indexDataSize);
+    memcpy(indexData, indices, indexDataSize);
+    
+    [quad setIndices:indexData count:4];
+    [quad setVertices:vertexData count:20];
+    
+    free(vertexData);
+    free(indexData);
+    
+    return quad;
 }
 
 @end

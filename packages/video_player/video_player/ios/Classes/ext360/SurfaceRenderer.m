@@ -12,7 +12,7 @@
 @property(nonatomic) int format;
 @property(nonatomic) int width;
 @property(nonatomic) int height;
-@property(nonatomic) Video360Renderer *renderer;
+@property(nonatomic) Video360Renderer *videoRenderer;
 @property(nonatomic) BOOL isEnable3D;
 @end
 
@@ -25,8 +25,8 @@
     _isEnable3D = NO;
     _width=1;
     _height=1;
-    _renderer = [[Video360Renderer alloc]init];
-    [super setRenderer: _renderer];
+    _videoRenderer = [[Video360Renderer alloc]init];
+    [super setRenderer: _videoRenderer];
     [self setMediaFormat:_format];
   }
   return self;
@@ -46,7 +46,12 @@
   int sphericalType = (format & 0x2) >> 1;
   int mediaType = (format & 0x1) + ((format & 0x4) >> 2);
   
-  Mesh *mesh;
+  // Release previous mesh if exists
+  if (_videoRenderer) {
+    [_videoRenderer configureSurface:nil];
+  }
+  
+  Mesh *mesh = nil;
   if(_isEnable3D) {
     mesh = [Sphere createUvSphereWithRadius:50
                                       latitudes:50
@@ -59,20 +64,22 @@
     mesh = [CanvasQuad createCanvasQuad];
     [super surfaceChanged:_width :_height];
   }
-  [_renderer configureSurface:mesh];
+  [_videoRenderer configureSurface:mesh];
 }
 
 -(void)setCameraRotationWithRoll:(float)roll pitch:(float)pitch yaw:(float)yaw {
   if(_isEnable3D) {
-    [_renderer setCameraRotation:roll :pitch :yaw];
+    [_videoRenderer setCameraRotation:roll :pitch :yaw];
   }
 }
 
 -(void)dispose {
   [super surfaceDestroyed];
-  if(_renderer) {
-    [_renderer glShutdown];
+  if(_videoRenderer) {
+    [_videoRenderer glShutdown];
+    _videoRenderer = nil;
   }
+  [super dispose];
 }
 
 @end

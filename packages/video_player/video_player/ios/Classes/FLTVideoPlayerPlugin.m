@@ -101,6 +101,12 @@ static void* playbackBufferFullContext = &playbackBufferFullContext;
                                            selector:@selector(itemDidPlayToEndTime:)
                                                name:AVPlayerItemDidPlayToEndTimeNotification
                                              object:item];
+
+  // Add observer for HLS bitrate changes
+  [item addObserver:self
+         forKeyPath:@"currentMediaSelection"
+            options:NSKeyValueObservingOptionNew
+            context:nil];
 }
 
 - (void)itemDidPlayToEndTime:(NSNotification*)notification {
@@ -259,6 +265,44 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 
   [self addObservers:item];
 
+  // Add HLS quality monitoring
+  if (@available(iOS 12.0, *)) {
+    // Set a reasonable buffer size (5 seconds) to balance quality and memory
+    item.preferredForwardBufferDuration = 5;
+    
+    // Set peak bitrate to 0 to allow maximum quality
+    item.preferredPeakBitRate = 0;
+    
+    // Enable automatic bitrate adaptation
+    item.preferredMaximumResolution = CGSizeZero; // CGSizeZero means no limit
+  }
+  
+  // Configure HLS playback for best quality
+  if ([asset isKindOfClass:[AVURLAsset class]]) {
+    // Select highest quality variant stream if available
+    AVMediaSelectionGroup *group = [asset mediaSelectionGroupForMediaCharacteristic:AVMediaCharacteristicVisual];
+    if (group) {
+      AVMediaSelectionOption *highestQualityOption = nil;
+      NSInteger highestBitrate = 0;
+      
+      for (AVMediaSelectionOption *option in group.options) {
+        NSArray *metadataItems = [option metadataForFormat:@"com.apple.metadata.info.bitrate"];
+        for (AVMetadataItem *metadataItem in metadataItems) {
+          NSInteger bitrate = [metadataItem.numberValue integerValue];
+          if (bitrate > highestBitrate) {
+            highestBitrate = bitrate;
+            highestQualityOption = option;
+          }
+        }
+      }
+      
+      if (highestQualityOption) {
+        [item selectMediaOption:highestQualityOption
+            inMediaSelectionGroup:group];
+      }
+    }
+  }
+
   [asset loadValuesAsynchronouslyForKeys:@[ @"tracks" ] completionHandler:assetCompletionHandler];
   
   _render = [[SurfaceRenderer alloc] initWithVideoOutput:_videoOutput];
@@ -323,6 +367,25 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   } else if (context == playbackBufferFullContext) {
     if (_eventSink != nil) {
       _eventSink(@{@"event" : @"bufferingEnd"});
+    }
+  } else if ([path isEqualToString:@"currentMediaSelection"]) {
+    AVPlayerItem *playerItem = object;
+    AVMediaSelectionGroup *group = [playerItem.asset mediaSelectionGroupForMediaCharacteristic:AVMediaCharacteristicVisual];
+    AVMediaSelectionOption *option = [playerItem.currentMediaSelection selectedMediaOptionInMediaSelectionGroup:group];
+    
+    if (option && _eventSink) {
+      NSInteger bitrate = 0;
+      NSArray *metadataItems = [option metadataForFormat:@"com.apple.metadata.info.bitrate"];
+      for (AVMetadataItem *metadataItem in metadataItems) {
+        bitrate = [metadataItem.numberValue integerValue];
+        break;
+      }
+      
+      _eventSink(@{
+        @"event": @"hlsQualityChanged",
+        @"quality": option.displayName ?: @"unknown",
+        @"bitrate": @(bitrate)
+      });
     }
   }
 }

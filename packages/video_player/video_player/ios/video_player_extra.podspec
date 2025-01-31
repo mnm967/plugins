@@ -14,11 +14,24 @@ Downloaded by pub (not CocoaPods).
   s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }
   s.source           = { :http => 'https://github.com/Eittipat/plugins/tree/master/packages/video_player_360/video_player' }
   s.documentation_url = 'https://pub.dev/packages/video_player'
-  s.source_files = 'Classes/**/*'
-  s.public_header_files = 'Classes/**/*.h'
+  
+  s.source_files = 'Classes/**/*', 'Classes/ext360/*.{h,m}'
+  s.public_header_files = 'Classes/**/*.h', 'Classes/ext360/*.h'
   s.dependency 'Flutter'
+  s.dependency 'GCDWebServer', '~> 3.0'
+  s.dependency 'SDWebImage', '~> 5.0'
   
   s.platform = :ios, '9.0'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  s.pod_target_xcconfig = { 
+    'DEFINES_MODULE' => 'YES',
+    'VALID_ARCHS[sdk=iphonesimulator*]' => 'x86_64',
+    'ENABLE_BITCODE' => 'NO'
+  }
+  
+  # Explicitly include Metal framework
+  s.frameworks = 'Metal', 'MetalKit'
+  
+  # Set minimum iOS version to 10.0 since Metal requires it
+  s.platform = :ios, '10.0'
 end
 

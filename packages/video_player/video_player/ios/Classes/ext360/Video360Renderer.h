@@ -6,16 +6,18 @@
 //
 
 #import <Foundation/Foundation.h>
-#import <GLKit/GLKit.h>
+#import <CoreVideo/CoreVideo.h>
+#import <Metal/Metal.h>
 #import "Mesh.h"
-#import "OpenGLRenderer.h"
 
-@import OpenGLES;
+@interface Video360Renderer : NSObject
 
+- (void)configureSurface:(Mesh *)mesh;
+- (void)onDrawFrame:(id<MTLTexture>)renderTarget;
+- (void)onSurfaceChanged:(int)width :(int)height;
+- (void)onSurfaceCreated;
+- (void)setCameraRotation:(float)roll :(float)pitch :(float)yaw;
+- (void)updateTexture:(CVPixelBufferRef)pixelBuffer;
+- (void)glShutdown;
 
-@interface Video360Renderer : NSObject<Renderer>
--(instancetype)init;
--(void)configureSurface:(Mesh*)mesh;
--(void)setCameraRotation:(float)roll :(float)pitch :(float)yaw;
--(void)glShutdown;
 @end
