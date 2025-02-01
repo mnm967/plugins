@@ -15,52 +15,51 @@
 
 // Metal shader source code
 static NSString *const shaderSource = @"#include <metal_stdlib>\n"
-                            "using namespace metal;\n"
-                            "\n"
-                            "struct VertexIn {\n"
-                            "    float3 position [[attribute(0)]];\n"
-                            "    float2 texCoord [[attribute(1)]];\n"
-                            "};\n"
-                            "\n"
-                            "struct VertexOut {\n"
-                            "    float4 position [[position]];\n"
-                            "    float2 texCoord;\n"
-                            "};\n"
-                            "\n"
-                            "struct Uniforms {\n"
-                            "    float4x4 modelViewProjectionMatrix;\n"
-                            "};\n"
-                            "\n"
-                            "vertex VertexOut vertex_main(const device VertexIn* vertices [[buffer(0)]],\n"
-                            "                            constant Uniforms &uniforms [[buffer(1)]],\n"
-                            "                            uint vid [[vertex_id]]) {\n"
-                            "    VertexOut out;\n"
-                            "    VertexIn in = vertices[vid];\n"
-                            "    out.position = uniforms.modelViewProjectionMatrix * float4(in.position, 1.0);\n"
-                            "    out.texCoord = in.texCoord;\n"
-                            "    return out;\n"
-                            "}\n"
-                            "\n"
-                            "fragment float4 fragment_main(VertexOut in [[stage_in]],\n"
-                            "                             texture2d<float> tex [[texture(0)]],\n"
-                            "                             sampler textureSampler [[sampler(0)]]) {\n"
-                            "    float2 tex_size = float2(tex.get_width(), tex.get_height());\n"
-                            "    float2 tex_pixel = 1.0 / tex_size;\n"
-                            "    \n"
-                            "    // Sample center and neighbors\n"
-                            "    float4 center = tex.sample(textureSampler, in.texCoord);\n"
-                            "    float4 top = tex.sample(textureSampler, in.texCoord + float2(0, -tex_pixel.y));\n"
-                            "    float4 bottom = tex.sample(textureSampler, in.texCoord + float2(0, tex_pixel.y));\n"
-                            "    float4 left = tex.sample(textureSampler, in.texCoord + float2(-tex_pixel.x, 0));\n"
-                            "    float4 right = tex.sample(textureSampler, in.texCoord + float2(tex_pixel.x, 0));\n"
-                            "    \n"
-                            "    // Very subtle sharpening\n"
-                            "    float sharpenStrength = 0.5;\n"
-                            "    float4 sharpened = center * (1.0 + 4.0 * sharpenStrength) -\n"
-                            "                       (top + bottom + left + right) * sharpenStrength;\n"
-                            "    \n"
-                            "    return sharpened;\n"
-                            "}";
+"using namespace metal;\n"
+"\n"
+"struct VertexIn {\n"
+"    float3 position [[attribute(0)]];\n"
+"    float2 texCoord [[attribute(1)]];\n"
+"};\n"
+"\n"
+"struct VertexOut {\n"
+"    float4 position [[position]];\n"
+"    float2 texCoord;\n"
+"};\n"
+"\n"
+"struct Uniforms {\n"
+"    float4x4 modelViewProjectionMatrix;\n"
+"};\n"
+"\n"
+"vertex VertexOut vertex_main(const device VertexIn* vertices [[buffer(0)]],\n"
+"                             constant Uniforms &uniforms [[buffer(1)]],\n"
+"                             uint vid [[vertex_id]]) {\n"
+"    VertexOut out;\n"
+"    VertexIn vin = vertices[vid];\n"
+"    out.position = uniforms.modelViewProjectionMatrix * float4(vin.position, 1.0);\n"
+"    out.texCoord = vin.texCoord;\n"
+"    return out;\n"
+"}\n"
+"\n"
+"fragment float4 fragment_main(VertexOut in [[stage_in]],\n"
+"                              texture2d<float> tex [[texture(0)]],\n"
+"                              sampler textureSampler [[sampler(0)]]) {\n"
+"    float2 texSize = float2(tex.get_width(), tex.get_height());\n"
+"    float2 texPixel = 1.0 / texSize;\n"
+"\n"
+"    // Sample center and immediate neighbors for a subtle sharpening effect\n"
+"    float4 center = tex.sample(textureSampler, in.texCoord);\n"
+"    float4 top = tex.sample(textureSampler, in.texCoord + float2(0.0, -texPixel.y));\n"
+"    float4 bottom = tex.sample(textureSampler, in.texCoord + float2(0.0, texPixel.y));\n"
+"    float4 left = tex.sample(textureSampler, in.texCoord + float2(-texPixel.x, 0.0));\n"
+"    float4 right = tex.sample(textureSampler, in.texCoord + float2(texPixel.x, 0.0));\n"
+"\n"
+"    // Use the original sharpen strength to ensure proper brightness and quality\n"
+"    float sharpenStrength = 0.25;\n"
+"    float4 sharpened = center * (1.0 + 4.0 * sharpenStrength) - (top + bottom + left + right) * sharpenStrength;\n"
+"\n"
+"    return sharpened;\n"
+"}";
 
 // Vertex structure
 typedef struct {
@@ -395,118 +394,112 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
 }
 
 - (void)onDrawFrame:(id<MTLTexture>)renderTarget {
-    @try {
-        // Add explicit validation of all required resources
-        if (!self.device || !self.commandQueue || !_pipelineState) {
-            NSLog(@"Warning: Required Metal resources are nil, skipping frame");
-            return;
-        }
-
-        if (!_displayMesh || !renderTarget || !_texture || !_vertexBuffer) {
-            // Log more specific debug info
-            NSLog(@"Warning: Required rendering resources are nil - displayMesh: %@, renderTarget: %@, texture: %@, vertexBuffer: %@",
-                  _displayMesh ? @"valid" : @"nil",
-                  renderTarget ? @"valid" : @"nil",
-                  _texture ? @"valid" : @"nil",
-                  _vertexBuffer ? @"valid" : @"nil");
-            return;
-        }
-
-        // Create command buffer first to validate pipeline is still valid
-        id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
-        if (!commandBuffer) {
-            NSLog(@"Warning: Failed to create command buffer");
-            return;
-        }
-
-        [self computePerspective];
-        
-        // Update uniforms with error handling
+    @autoreleasepool {
         @try {
-            Uniforms uniforms;
-            uniforms.modelViewProjectionMatrix = _mvpMatrix;
-            void *contents = [_uniformBuffer contents];
-            if (contents) {
-                memcpy(contents, &uniforms, sizeof(Uniforms));
+            // Since this function is executed on renderQueue, you can use instance variables directly.
+            if (!self.device || !self.commandQueue || !_pipelineState) {
+                NSLog(@"Warning: Required Metal resources are nil, skipping frame");
+                return;
             }
-        } @catch (NSException *exception) {
-            NSLog(@"Warning: Exception updating uniforms: %@", exception);
-            return;
-        }
-        
-        MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-        renderPassDescriptor.colorAttachments[0].texture = renderTarget;
-        renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-        renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-        
-        id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-        if (!renderEncoder) {
-            return;
-        }
-        
-        @try {
-            [renderEncoder setRenderPipelineState:_pipelineState];
-            [renderEncoder setVertexBuffer:_vertexBuffer offset:0 atIndex:0];
-            [renderEncoder setVertexBuffer:_uniformBuffer offset:0 atIndex:1];
-            [renderEncoder setFragmentTexture:_texture atIndex:0];
-            [renderEncoder setFragmentSamplerState:_samplerState atIndex:0];
-            
-            NSUInteger indexCount = [_displayMesh indexCount];
-            if (_indexBuffer && indexCount > 0) {
-                [renderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
-                                        indexCount:indexCount
-                                         indexType:MTLIndexTypeUInt16
-                                       indexBuffer:_indexBuffer
-                                 indexBufferOffset:0];
-            } else {
-                // Get vertex count safely
-                float *vertices = NULL;
-                NSUInteger totalVertexCount = 0;
-                @try {
-                    [_displayMesh getVertices:&vertices count:&totalVertexCount];
-                    if (vertices) {
-                        free(vertices);
-                        vertices = NULL;
-                    }
-                } @catch (NSException *exception) {
-                    NSLog(@"Warning: Failed to get vertex count: %@", exception);
-                    if (vertices) {
-                        free(vertices);
-                    }
-                    return;
-                }
-                
-                // Calculate actual vertex count (total floats / floats per vertex)
-                NSUInteger actualVertexCount = totalVertexCount / 5; // 3 for position + 2 for texcoord
-                
-                // Validate vertex count
-                if (actualVertexCount == 0) {
-                    NSLog(@"Warning: Invalid vertex count");
-                    return;
-                }
-                
-                // Draw with validated vertex count
-                [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                                vertexStart:0
-                                vertexCount:actualVertexCount];
+
+            if (!_displayMesh || !renderTarget || !_texture || !_vertexBuffer) {
+                NSLog(@"Warning: Required rendering resources are nil - displayMesh: %@, renderTarget: %@, texture: %@, vertexBuffer: %@",
+                      _displayMesh ? @"valid" : @"nil",
+                      renderTarget ? @"valid" : @"nil",
+                      _texture ? @"valid" : @"nil",
+                      _vertexBuffer ? @"valid" : @"nil");
+                return;
             }
-            
-            [renderEncoder endEncoding];
-            [commandBuffer commit];
-            
-            // Add completion handler to catch any errors
+
+            id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+            if (!commandBuffer) {
+                NSLog(@"Warning: Failed to create command buffer");
+                return;
+            }
+
+            [self computePerspective];
+
+            @try {
+                Uniforms uniforms;
+                uniforms.modelViewProjectionMatrix = _mvpMatrix;
+                void *contents = [_uniformBuffer contents];
+                if (contents) {
+                    memcpy(contents, &uniforms, sizeof(Uniforms));
+                }
+            } @catch (NSException *exception) {
+                NSLog(@"Warning: Exception updating uniforms: %@", exception);
+                return;
+            }
+
+            MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+            renderPassDescriptor.colorAttachments[0].texture = renderTarget;
+            renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+
+            id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+            if (!renderEncoder) {
+                return;
+            }
+
+            @try {
+                if(_pipelineState) [renderEncoder setRenderPipelineState:_pipelineState];
+                if(_vertexBuffer) [renderEncoder setVertexBuffer:_vertexBuffer offset:0 atIndex:0];
+                if(_uniformBuffer) [renderEncoder setVertexBuffer:_uniformBuffer offset:0 atIndex:1];
+                if(_texture) [renderEncoder setFragmentTexture:_texture atIndex:0];
+                if(_samplerState) [renderEncoder setFragmentSamplerState:_samplerState atIndex:0];
+
+                NSUInteger indexCount = [_displayMesh indexCount];
+                if (_indexBuffer && indexCount > 0) {
+                    [renderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                                             indexCount:indexCount
+                                              indexType:MTLIndexTypeUInt16
+                                            indexBuffer:_indexBuffer
+                                      indexBufferOffset:0];
+                } else {
+                    float *vertices = NULL;
+                    NSUInteger totalVertexCount = 0;
+                    @try {
+                        [_displayMesh getVertices:&vertices count:&totalVertexCount];
+                        if (vertices) {
+                            free(vertices);
+                            vertices = NULL;
+                        }
+                    } @catch (NSException *exception) {
+                        NSLog(@"Warning: Failed to get vertex count: %@", exception);
+                        if (vertices) {
+                            free(vertices);
+                        }
+                        return;
+                    }
+                    
+                    NSUInteger actualVertexCount = totalVertexCount / 5;
+                    if (actualVertexCount == 0) {
+                        NSLog(@"Warning: Invalid vertex count");
+                        return;
+                    }
+                    
+                    [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                                      vertexStart:0
+                                      vertexCount:actualVertexCount];
+                }
+            } @catch (NSException *exception) {
+                NSLog(@"Warning: Exception during rendering: %@", exception);
+            } @finally {
+                [renderEncoder endEncoding];
+            }
+
             [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
                 if (buffer.error) {
                     NSLog(@"Command buffer error: %@", buffer.error);
                 }
             }];
-            
+
+            [commandBuffer commit];
+
         } @catch (NSException *exception) {
-            NSLog(@"Warning: Exception during rendering: %@", exception);
+            NSLog(@"Warning: Exception in draw frame: %@", exception);
         }
-    } @catch (NSException *exception) {
-        NSLog(@"Warning: Exception in draw frame: %@", exception);
     }
 }
 
@@ -680,15 +673,7 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis) {
 
 // Update dealloc to ensure we're not causing deadlocks
 - (void)dealloc {
-    // If we're on main thread, clean up directly
-    if ([NSThread isMainThread]) {
-        [self cleanupResources];
-    } else {
-        // If we're on background thread, dispatch async to main
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self cleanupResources];
-        });
-    }
+    [self cleanupResources];
 }
 
 @end

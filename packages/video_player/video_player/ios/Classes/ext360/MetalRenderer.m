@@ -15,6 +15,7 @@
 @property (nonatomic) BOOL signalChanged;
 @property (nonatomic) BOOL readyToDraw;
 @property (nonatomic) BOOL newFrameAvailable;
+@property (nonatomic, strong) dispatch_queue_t renderQueue;
 @end
 
 @implementation MetalRenderer
@@ -22,6 +23,7 @@
 - (instancetype)initWithVideoOutput:(AVPlayerItemVideoOutput *)videoOutput {
     self = [super init];
     if (self) {
+        _renderQueue = dispatch_queue_create("com.yourcompany.metalRendererQueue", DISPATCH_QUEUE_SERIAL);
         _videoOutput = videoOutput;
         _running = YES;
         _disposed = NO;
@@ -34,7 +36,11 @@
         // Initialize Metal
         [self initMetal];
         
-        NSThread *thread = [[NSThread alloc] initWithTarget:self selector:@selector(run) object:nil];
+        NSThread *thread = [[NSThread alloc] initWithBlock:^{
+            dispatch_sync(_renderQueue, ^{
+                [self runLoopBlock:self];
+            });
+        }];
         thread.name = @"MetalRenderer";
         [thread start];
     }
@@ -58,41 +64,45 @@
     _running = NO;
 }
 
-- (void)run {
-    while (_running) {
+- (void)runLoopBlock:(MetalRenderer *)renderer {
+    while (renderer.running) {
         @autoreleasepool {
             CFTimeInterval loopStart = CACurrentMediaTime();
             
-            if (_videoOutput == NULL)
+            if (renderer.videoOutput == NULL)
                 continue;
             
-            CMTime outputTime = [_videoOutput itemTimeForHostTime:CACurrentMediaTime()];
-            _newFrameAvailable = [_videoOutput hasNewPixelBufferForItemTime:outputTime];
+            CMTime outputTime = [renderer.videoOutput itemTimeForHostTime:CACurrentMediaTime()];
+            renderer.newFrameAvailable = [renderer.videoOutput hasNewPixelBufferForItemTime:outputTime];
             
-            CVPixelBufferRef inputSource = [_videoOutput copyPixelBufferForItemTime:outputTime itemTimeForDisplay:NULL];
+            CVPixelBufferRef inputSource = [renderer.videoOutput copyPixelBufferForItemTime:outputTime itemTimeForDisplay:NULL];
             if (inputSource == NULL)
                 continue;
             
             CGSize inputSize = CGSizeMake(CVPixelBufferGetWidth(inputSource), CVPixelBufferGetHeight(inputSource));
-            if (inputSize.width != _renderSize.width || inputSize.height != _renderSize.height) {
-                [self surfaceChanged:inputSize.width :inputSize.height];
+            if (inputSize.width != renderer.renderSize.width || inputSize.height != renderer.renderSize.height) {
+                [renderer surfaceChanged:inputSize.width :inputSize.height];
             }
             
-            if (_signalCreated) {
-                [_renderer onSurfaceCreated];
-                _signalCreated = NO;
+            if (renderer.signalCreated) {
+                if (renderer.renderer) {
+                    [renderer.renderer onSurfaceCreated];
+                }
+                renderer.signalCreated = NO;
             }
             
-            if (_signalChanged) {
-                [self resetTextureSize];
-                [_renderer onSurfaceChanged:_renderSize.width :_renderSize.height];
-                _signalChanged = NO;
-                _readyToDraw = YES;
+            if (renderer.signalChanged) {
+                [renderer resetTextureSize];
+                [renderer.renderer onSurfaceChanged:renderer.renderSize.width :renderer.renderSize.height];
+                renderer.signalChanged = NO;
+                renderer.readyToDraw = YES;
             }
             
-            if (_readyToDraw) {
-                [_renderer updateTexture:inputSource];
-                [_renderer onDrawFrame:_renderTexture];
+            if (renderer.readyToDraw) {
+                if (renderer.renderer) {
+                    [renderer.renderer updateTexture:inputSource];
+                    [renderer.renderer onDrawFrame:renderer.renderTexture];
+                }
             }
             
             CVBufferRelease(inputSource);
@@ -103,12 +113,18 @@
             }
         }
     }
-    [self deinitMetal];
+    [renderer deinitMetal];
 }
 
 - (CVPixelBufferRef)copyPixelBuffer {
-    CVBufferRetain(_output);
-    return _output;
+    CVPixelBufferRef buffer = NULL;
+    @synchronized(self) {
+        buffer = _output;
+        if (buffer) {
+            CVBufferRetain(buffer);
+        }
+    }
+    return buffer;
 }
 
 - (void)initMetal {
@@ -153,9 +169,11 @@
         }
         
         // Release old output buffer if it exists
-        if (_output) {
-            CVPixelBufferRelease(_output);
-            _output = NULL;
+        @synchronized(self) {
+            if (_output) {
+                CVPixelBufferRelease(_output);
+                _output = NULL;
+            }
         }
         
         // Create pixel buffer with optimal settings
@@ -202,16 +220,20 @@
         _renderTexture = nil;
         
         // Release output buffer
-        if (_output) {
-            CVPixelBufferRelease(_output);
-            _output = NULL;
+        @synchronized(self) {
+            if (_output) {
+                CVPixelBufferRelease(_output);
+                _output = NULL;
+            }
         }
         
-        // Flush and release texture cache
-        if (_textureCache) {
-            CVMetalTextureCacheFlush(_textureCache, 0);
-            CFRelease(_textureCache);
-            _textureCache = NULL;
+        // Flush and release texture cache in a synchronized block to prevent concurrent access
+        @synchronized(self) {
+            if (_textureCache) {
+                CVMetalTextureCacheFlush(_textureCache, 0);
+                CFRelease(_textureCache);
+                _textureCache = NULL;
+            }
         }
         
         // Release Metal resources

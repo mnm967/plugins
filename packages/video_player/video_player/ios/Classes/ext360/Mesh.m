@@ -48,7 +48,7 @@ const NSString* CANVAS_QUAD_VERTEX_SHADER_CODE =
 
 const NSString* FRAGMENT_SHADER_CODE =
 @"#version 300 es\n"\
-@"precision mediump float;\n"\
+@"precision highp float;\n"\
 @"uniform sampler2D uTexture;\n"\
 @"in vec2 vTexCoords;\n"\
 @"out vec4 fragmentColor;\n"\
