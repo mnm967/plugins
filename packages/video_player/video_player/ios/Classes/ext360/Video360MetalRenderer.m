@@ -146,6 +146,10 @@ typedef struct {
 }
 
 - (void)configureSurface:(Mesh *)mesh {
+    if (!mesh) {
+        NSLog(@"Warning: Attempting to configure with nil mesh");
+        return;
+    }
     _mesh = mesh;
     [self setupVertexBuffer];
 }
@@ -154,17 +158,36 @@ typedef struct {
     if (!_mesh) return;
     
     // Get mesh data using the proper methods
-    float *vertices;
-    uint16_t *indices;
-    NSUInteger vertexCount, indexCount;
+    float *vertices = NULL;
+    uint16_t *indices = NULL;
+    NSUInteger vertexCount = 0, indexCount = 0;
     
-    [_mesh getVertices:&vertices count:&vertexCount];
-    [_mesh getIndices:&indices count:&indexCount];
+    @try {
+        [_mesh getVertices:&vertices count:&vertexCount];
+        [_mesh getIndices:&indices count:&indexCount];
+    } @catch (NSException *exception) {
+        NSLog(@"Exception getting mesh data: %@", exception);
+        if (vertices) free(vertices);
+        if (indices) free(indices);
+        return;
+    }
+    
+    // Validate vertex data
+    if (!vertices || vertexCount == 0) {
+        NSLog(@"Invalid vertex data");
+        if (indices) free(indices);
+        return;
+    }
     
     _vertexCount = vertexCount / 5;  // Each vertex has 5 floats (3 for position, 2 for texture)
     _indexCount = indexCount;
     
-    if (_vertexCount == 0) return;  // Guard against zero vertices
+    if (_vertexCount == 0) {
+        NSLog(@"No vertices in mesh");
+        free(vertices);
+        if (indices) free(indices);
+        return;
+    }
     
     // Create vertex buffer - each vertex has position (3 floats) and texture coordinates (2 floats)
     const size_t vertexSize = sizeof(Vertex);  // 20 bytes per vertex
@@ -172,6 +195,13 @@ typedef struct {
     
     // Convert the float array to Vertex array
     Vertex *vertexData = (Vertex *)malloc(bufferSize);
+    if (!vertexData) {
+        NSLog(@"Failed to allocate memory for vertex data");
+        free(vertices);
+        if (indices) free(indices);
+        return;
+    }
+    
     for (NSUInteger i = 0; i < _vertexCount; i++) {
         NSUInteger srcIdx = i * 5;  // Source index in the float array
         vertexData[i].position = (vector_float3){
@@ -190,17 +220,34 @@ typedef struct {
                                        length:bufferSize
                                       options:MTLResourceStorageModeShared];
     free(vertexData);
+    free(vertices);
+    
+    if (!_vertexBuffer) {
+        NSLog(@"Failed to create vertex buffer");
+        if (indices) free(indices);
+        return;
+    }
     
     // Create index buffer
-    if (indexCount > 0) {
+    if (indices && indexCount > 0) {
         _indexBuffer = [_device newBufferWithBytes:indices
                                          length:indexCount * sizeof(uint16_t)
                                         options:MTLResourceStorageModeShared];
+        if (!_indexBuffer) {
+            NSLog(@"Failed to create index buffer");
+        }
     }
     
-    // Create uniform buffer
-    _uniformBuffer = [_device newBufferWithLength:sizeof(Uniforms)
-                                        options:MTLResourceStorageModeShared];
+    if (indices) free(indices);
+    
+    // Ensure uniform buffer exists
+    if (!_uniformBuffer) {
+        _uniformBuffer = [_device newBufferWithLength:sizeof(Uniforms)
+                                            options:MTLResourceStorageModeShared];
+        if (!_uniformBuffer) {
+            NSLog(@"Failed to create uniform buffer");
+        }
+    }
 }
 
 - (void)updateViewportWidth:(int)width height:(int)height {
@@ -216,6 +263,8 @@ typedef struct {
 }
 
 - (void)updateMVPMatrix {
+    if (_viewportSize.x == 0 || _viewportSize.y == 0) return;
+    
     float aspect = (float)_viewportSize.x / (float)_viewportSize.y;
     float fov = FIELD_OF_VIEW * (M_PI / 180.0f);
     
@@ -226,33 +275,59 @@ typedef struct {
     modelView = matrix4x4_rotation(modelView, -_yaw, (vector_float3){0, 1, 0});
     modelView = matrix4x4_rotation(modelView, -_roll, (vector_float3){0, 0, 1});
     
+    if (!_uniformBuffer) {
+        NSLog(@"Uniform buffer is nil during MVP update");
+        return;
+    }
+    
+    void *contents = [_uniformBuffer contents];
+    if (!contents) {
+        NSLog(@"Failed to get uniform buffer contents");
+        return;
+    }
+    
     Uniforms uniforms;
     uniforms.modelViewProjectionMatrix = matrix_multiply(perspective, modelView);
     
-    memcpy([_uniformBuffer contents], &uniforms, sizeof(Uniforms));
+    memcpy(contents, &uniforms, sizeof(Uniforms));
 }
 
 - (void)drawWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
                      texture:(id<MTLTexture>)texture
                      inView:(MTKView *)view {
-    if (!_mesh || !_pipelineState) return;
+    if (!_mesh || !_pipelineState || !commandBuffer || !texture || !view) return;
     
     MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
     if (!renderPassDescriptor) return;
     
     id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+    if (!renderEncoder) return;
+    
     [renderEncoder setRenderPipelineState:_pipelineState];
+    
+    // Verify vertex buffer exists before setting it
+    if (!_vertexBuffer) {
+        [renderEncoder endEncoding];
+        return;
+    }
     [renderEncoder setVertexBuffer:_vertexBuffer offset:0 atIndex:0];
+    
+    // Verify uniform buffer exists before setting it
+    if (!_uniformBuffer) {
+        [renderEncoder endEncoding];
+        return;
+    }
     [renderEncoder setVertexBuffer:_uniformBuffer offset:0 atIndex:1];
+    
     [renderEncoder setFragmentTexture:texture atIndex:0];
     
-    if (_indexBuffer) {
+    if (_indexBuffer && _indexCount > 0) {
         [renderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                                 indexCount:_indexCount
                                  indexType:MTLIndexTypeUInt16
                                indexBuffer:_indexBuffer
                          indexBufferOffset:0];
-    } else {
+    } else if (_vertexCount > 0) {
         [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
                         vertexStart:0
                         vertexCount:_vertexCount];
@@ -262,16 +337,26 @@ typedef struct {
 }
 
 - (void)updateTexture:(CVPixelBufferRef)pixelBuffer {
-    if (_textureCache) {
-        CVMetalTextureCacheFlush(_textureCache, 0);
-    }
+    if (!pixelBuffer || !_textureCache) return;
+    
+    CVMetalTextureCacheFlush(_textureCache, 0);
 }
 
 - (void)shutdown {
+    // First release all Metal resources
+    _vertexBuffer = nil;
+    _indexBuffer = nil;
+    _uniformBuffer = nil;
+    _pipelineState = nil;
+    
     if (_textureCache) {
         CFRelease(_textureCache);
         _textureCache = NULL;
     }
+}
+
+- (void)dealloc {
+    [self shutdown];
 }
 
 #pragma mark - Helper Functions
