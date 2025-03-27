@@ -91,6 +91,7 @@ typedef struct {
     float _roll;
     float _pitch;
     float _yaw;
+    NSUInteger _meshIndexCount;
 }
 
 // Forward declarations of helper functions
@@ -305,6 +306,10 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
 - (void)updateMeshBuffers {
     @try {
         if (!_requestedDisplayMesh) return;
+        if (!self.device) {
+            NSLog(@"Error: Metal device is nil during mesh buffer update");
+            return;
+        }
         
         // Get mesh data with error handling
         float *vertices = NULL;
@@ -314,6 +319,7 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
         @try {
             [_requestedDisplayMesh getVertices:&vertices count:&vertexCount];
             [_requestedDisplayMesh getIndices:&indices count:&indexCount];
+            _meshIndexCount = indexCount;
         } @catch (NSException *exception) {
             NSLog(@"Warning: Exception getting mesh data: %@", exception);
             if (vertices) free(vertices);
@@ -330,6 +336,13 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
         
         // Calculate vertex buffer size
         NSUInteger actualVertexCount = vertexCount / 5;
+        if (actualVertexCount == 0) {
+            NSLog(@"Warning: No vertices in requested mesh");
+            free(vertices);
+            if (indices) free(indices);
+            return;
+        }
+        
         NSUInteger bufferLength = actualVertexCount * sizeof(Vertex);
         
         // Create vertex data with error handling
@@ -374,13 +387,15 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
             newIndexBuffer = [self.device newBufferWithBytes:indices
                                                     length:indexCount * sizeof(uint16_t)
                                                    options:MTLResourceStorageModeShared];
-            free(indices);
             
             if (!newIndexBuffer) {
                 NSLog(@"Warning: Failed to create index buffer");
+                free(indices);
                 return;
             }
         }
+        
+        if (indices) free(indices);
         
         // Update instance variables only after successful creation
         _vertexBuffer = newVertexBuffer;
@@ -420,18 +435,31 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
             [self computePerspective];
 
             @try {
+                if (!_uniformBuffer) {
+                    NSLog(@"Warning: Uniform buffer is nil");
+                    return;
+                }
+                
+                void *contents = [_uniformBuffer contents];
+                if (!contents) {
+                    NSLog(@"Warning: Failed to access uniform buffer contents");
+                    return;
+                }
+                
                 Uniforms uniforms;
                 uniforms.modelViewProjectionMatrix = _mvpMatrix;
-                void *contents = [_uniformBuffer contents];
-                if (contents) {
-                    memcpy(contents, &uniforms, sizeof(Uniforms));
-                }
+                memcpy(contents, &uniforms, sizeof(Uniforms));
             } @catch (NSException *exception) {
                 NSLog(@"Warning: Exception updating uniforms: %@", exception);
                 return;
             }
 
             MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+            if (!renderPassDescriptor) {
+                NSLog(@"Warning: Failed to create render pass descriptor");
+                return;
+            }
+            
             renderPassDescriptor.colorAttachments[0].texture = renderTarget;
             renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
             renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -439,6 +467,7 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
 
             id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
             if (!renderEncoder) {
+                NSLog(@"Warning: Failed to create render command encoder");
                 return;
             }
 
@@ -449,7 +478,7 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
                 if(_texture) [renderEncoder setFragmentTexture:_texture atIndex:0];
                 if(_samplerState) [renderEncoder setFragmentSamplerState:_samplerState atIndex:0];
 
-                NSUInteger indexCount = [_displayMesh indexCount];
+                NSUInteger indexCount = _meshIndexCount;
                 if (_indexBuffer && indexCount > 0) {
                     [renderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
                                              indexCount:indexCount
@@ -459,23 +488,37 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
                 } else {
                     float *vertices = NULL;
                     NSUInteger totalVertexCount = 0;
+                    BOOL vertexCountSuccess = NO;
+                    
                     @try {
-                        [_displayMesh getVertices:&vertices count:&totalVertexCount];
-                        if (vertices) {
-                            free(vertices);
-                            vertices = NULL;
+                        if (_displayMesh) {
+                            [_displayMesh getVertices:&vertices count:&totalVertexCount];
+                            vertexCountSuccess = YES;
+                            if (vertices) {
+                                free(vertices);
+                                vertices = NULL;
+                            }
+                        } else {
+                            NSLog(@"Warning: Display mesh is nil when trying to get vertex count");
                         }
                     } @catch (NSException *exception) {
                         NSLog(@"Warning: Failed to get vertex count: %@", exception);
                         if (vertices) {
                             free(vertices);
                         }
+                        [renderEncoder endEncoding];
+                        return;
+                    }
+                    
+                    if (!vertexCountSuccess) {
+                        [renderEncoder endEncoding];
                         return;
                     }
                     
                     NSUInteger actualVertexCount = totalVertexCount / 5;
                     if (actualVertexCount == 0) {
                         NSLog(@"Warning: Invalid vertex count");
+                        [renderEncoder endEncoding];
                         return;
                     }
                     
@@ -520,7 +563,15 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
 
 - (void)updateTexture:(CVPixelBufferRef)pixelBuffer {
     @try {
-        if (!pixelBuffer) return;
+        if (!pixelBuffer) {
+            NSLog(@"Warning: Nil pixel buffer in updateTexture");
+            return;
+        }
+        
+        if (!self.device) {
+            NSLog(@"Warning: Metal device is nil in updateTexture");
+            return;
+        }
         
         @autoreleasepool {
             _texture = nil;
@@ -533,9 +584,14 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
                                                           NULL,
                                                           &textureCache);
                 if (result != kCVReturnSuccess) {
-                    NSLog(@"Warning: Failed to create texture cache");
+                    NSLog(@"Warning: Failed to create texture cache (error: %d)", result);
                     return;
                 }
+            }
+            
+            if (CVPixelBufferGetIOSurface(pixelBuffer) == NULL) {
+                NSLog(@"Warning: Pixel buffer has no IOSurface");
+                return;
             }
             
             CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -543,6 +599,11 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
             @try {
                 size_t width = CVPixelBufferGetWidth(pixelBuffer);
                 size_t height = CVPixelBufferGetHeight(pixelBuffer);
+                
+                if (width == 0 || height == 0) {
+                    NSLog(@"Warning: Invalid pixel buffer dimensions: %zu x %zu", width, height);
+                    return;
+                }
                 
                 CVMetalTextureRef metalTextureRef = NULL;
                 CVReturn result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault,
@@ -558,6 +619,8 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
                 if (result == kCVReturnSuccess && metalTextureRef) {
                     _texture = CVMetalTextureGetTexture(metalTextureRef);
                     CFRelease(metalTextureRef);
+                } else {
+                    NSLog(@"Warning: Failed to create Metal texture from pixel buffer (error: %d)", result);
                 }
             } @finally {
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -569,31 +632,35 @@ static matrix_float4x4 matrix4x4_rotation(float radians, vector_float3 axis);
 }
 
 - (void)computePerspective {
-    // Reuse matrices to avoid allocations
-    static matrix_float4x4 projectionMatrix, viewMatrix, rotationMatrix;
-    
-    float aspect = 1.0f;
-    float fovRadians = FIELD_OF_VIEW * M_PI / 180.0f;
-    
-    projectionMatrix = matrix4x4_perspective(fovRadians, aspect, 0.1f, 100.0f);
-    viewMatrix = matrix4x4_identity();
-    rotationMatrix = matrix4x4_identity();
-    
-    // Optimize rotation calculations
-    if (_yaw != 0.0f) {
-        rotationMatrix = matrix_multiply(matrix4x4_rotation(_yaw * M_PI / 180.0f, (vector_float3){0, 1, 0}), rotationMatrix);
+    @try {
+        // Reuse matrices to avoid allocations
+        static matrix_float4x4 projectionMatrix, viewMatrix, rotationMatrix;
+        
+        float aspect = 1.0f;
+        float fovRadians = FIELD_OF_VIEW * M_PI / 180.0f;
+        
+        projectionMatrix = matrix4x4_perspective(fovRadians, aspect, 0.1f, 100.0f);
+        viewMatrix = matrix4x4_identity();
+        rotationMatrix = matrix4x4_identity();
+        
+        // Optimize rotation calculations
+        if (_yaw != 0.0f) {
+            rotationMatrix = matrix_multiply(matrix4x4_rotation(_yaw * M_PI / 180.0f, (vector_float3){0, 1, 0}), rotationMatrix);
+        }
+        if (_pitch != 0.0f) {
+            rotationMatrix = matrix_multiply(matrix4x4_rotation(_pitch * M_PI / 180.0f, (vector_float3){1, 0, 0}), rotationMatrix);
+        }
+        if (_roll != 0.0f) {
+            rotationMatrix = matrix_multiply(matrix4x4_rotation(_roll * M_PI / 180.0f, (vector_float3){0, 0, 1}), rotationMatrix);
+        }
+        
+        viewMatrix.columns[3].z = -2.0f;
+        
+        matrix_float4x4 modelViewMatrix = matrix_multiply(viewMatrix, rotationMatrix);
+        _mvpMatrix = matrix_multiply(projectionMatrix, modelViewMatrix);
+    } @catch (NSException *exception) {
+        NSLog(@"Warning: Exception in computePerspective: %@", exception);
     }
-    if (_pitch != 0.0f) {
-        rotationMatrix = matrix_multiply(matrix4x4_rotation(_pitch * M_PI / 180.0f, (vector_float3){1, 0, 0}), rotationMatrix);
-    }
-    if (_roll != 0.0f) {
-        rotationMatrix = matrix_multiply(matrix4x4_rotation(_roll * M_PI / 180.0f, (vector_float3){0, 0, 1}), rotationMatrix);
-    }
-    
-    viewMatrix.columns[3].z = -2.0f;
-    
-    matrix_float4x4 modelViewMatrix = matrix_multiply(viewMatrix, rotationMatrix);
-    _mvpMatrix = matrix_multiply(projectionMatrix, modelViewMatrix);
 }
 
 // Helper functions for matrix operations
